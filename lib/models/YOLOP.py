@@ -507,26 +507,45 @@ class MCnet(nn.Module):
         layers, save= [], []
         self.nc = 1
         self.detector_index = -1
-        self.det_out_idx = block_cfg[0][0]
-        self.seg_out_idx = block_cfg[0][1:]
+        self.det_out_idx = block_cfg[0][0] # 24
+        self.seg_out_idx = block_cfg[0][1:] # [33, 42]
         
 
         # Build model
+        # Se comienza a iterar desde 1 porque el primer elemento de block_cfg es el indice de las distintas cabezas
+        
+        # De aca se obtiene en primer lugar el indice de la capa que se esta agregando (i)
+        # from_ corresponde a la capa anterior a la que se esta agregando. -1 es la capa directamente anterior ?
+        # block corresponde al tipo de capa que se esta agregando
+        # args corresponde a los argumentos de la capa que se esta agregando
+
         for i, (from_, block, args) in enumerate(block_cfg[1:]):
-            block = eval(block) if isinstance(block, str) else block  # eval strings
-            if block is Detect:
-                self.detector_index = i
-            block_ = block(*args)
-            block_.index, block_.from_ = i, from_
-            layers.append(block_)
+            block = eval(block) if isinstance(block, str) else block  # Si el bloque es un string, se convierte a clase con eval
+            if block is Detect: # Si el bloque es Detect, se guarda el indice de la capa
+                self.detector_index = i # Por algun motivo no lo aigna directamente a 24 igual que self.det_out_idx
+            block_ = block(*args) # Se ingresan los argumentos correspondientes a la capa que se esta agregando
+            block_.index, block_.from_ = i, from_ # Se le asignan los valores a los atributos index y from_ de la capa que se esta agregando
+            layers.append(block_) # Se agrega el bloque a la lista layers
+            # Si from_ es distinto de -1, entonces se verifica si from_ es un entero o una lista
+            # Si es un entero, se convierte en una lista con un solo elemento, si es una lista, se deja igual
+            # Finalmente por cada elemento (x) de la lista retornada, se calcula el modulo entre x y el indice de la capa i 
+            # El resultado del modulo se agrega a la lista save
+            # En la practica, genera una lista con todos los "from_" que no son -1 -> [6, 4, 14, 10, 17, 20, 23, 16, 16]
             save.extend(x % i for x in ([from_] if isinstance(from_, int) else from_) if x != -1)  # append to savelist
         assert self.detector_index == block_cfg[0][0]
 
+        # Genero un modelo desempaquetando las capas (layers) y utilizando el metodo nn.Sequential. 
+        #Finalmente lo asigno al atributo model de la clase MCnet
+        # Por otro laso asigno al atributo save la lista save ordenada
         self.model, self.save = nn.Sequential(*layers), sorted(save)
+        # NOTE: No comprendo del todo esta parte, dado que self.nc es 1 y no se modifica
         self.names = [str(i) for i in range(self.nc)]
+        
 
         # set stride、anchor for detector
         Detector = self.model[self.detector_index]  # detector
+        # Se obtiene la capa de deteccion en base al indice de la capa de deteccion y se procede a configurar
+        # los strides y los anchors
         if isinstance(Detector, Detect):
             s = 128  # 2x min stride
             # for x in self.forward(torch.zeros(1, 3, s, s)):
@@ -543,6 +562,7 @@ class MCnet(nn.Module):
         
         initialize_weights(self)
 
+    # Se define el metodo forward de la clase MCnet
     def forward(self, x):
         cache = []
         out = []
@@ -551,11 +571,14 @@ class MCnet(nn.Module):
         LL_fmap = []
         for i, block in enumerate(self.model):
             if block.from_ != -1:
+                # NOTE: ¿Define las conexiones?
                 x = cache[block.from_] if isinstance(block.from_, int) else [x if j == -1 else cache[j] for j in block.from_]       #calculate concat detect
             x = block(x)
+            # Salidas de segmentacion
             if i in self.seg_out_idx:     #save driving area segment result
                 m=nn.Sigmoid()
-                out.append(m(x))
+                out.append(m(x)) # Se agrega una salida sigmoide a la salida de las cabezas de segmentacion
+            # Salida de deteccion
             if i == self.detector_index:
                 det_out = x
             cache.append(x if block.index in self.save else None)
